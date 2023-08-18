@@ -7,10 +7,12 @@ using Cake.Common.Diagnostics;
 using Cake.Common.IO;
 using Cake.Common.Tools.NuGet;
 using Cake.Common.Tools.NuGet.Push;
+using Cake.Common.Tools.NuGet.Sources;
 using Cake.Core;
 using Cake.Core.Annotations;
 using Cake.Core.IO;
 using NuGet.Common;
+using NuGet.Configuration;
 using NuGet.Packaging;
 using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
@@ -28,6 +30,8 @@ namespace Cake.ExtendedNuGet
     public static class ExtendedNuGetAliases
     {
         private const string DefaultNuGetSource = "https://api.nuget.org/v3/index.json";
+
+        private static IReadOnlyList<PackageSource> configuredSources;
 
         /// <summary>
         /// Gets the Package Id from a .nupkg file.
@@ -117,7 +121,7 @@ namespace Cake.ExtendedNuGet
             {
                 try
                 {
-                    var nuSource = Repository.Factory.GetCoreV3(nugetSource);
+                    var nuSource = GetSourceRepository(nugetSource);
                     using var nuCache = new SourceCacheContext();
                     var nuLogger = NullLogger.Instance;
 
@@ -290,6 +294,44 @@ namespace Cake.ExtendedNuGet
             var reader = new PackagesConfigReader(document);
 
             return reader.GetPackages().FirstOrDefault(x => x.PackageIdentity.Id.Equals(packageId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        [CakeMethodAlias]
+        [CakeNamespaceImport("NuGet")]
+        public static bool TryLoadPackageSourcesFromConfiguration(this ICakeContext context, DirectoryPath root = null, string configFileName = null)
+        {
+            try
+            {
+                configuredSources = null;
+
+                var settings = configFileName == null
+                    ? Settings.LoadDefaultSettings(root?.FullPath)
+                    : Settings.LoadSpecificSettings(root?.FullPath, configFileName);
+
+                var packageSourceProvider = new PackageSourceProvider(settings);
+                configuredSources = packageSourceProvider.LoadPackageSources().Where(s => s.IsEnabled).ToArray();
+
+                context.Log.Write(Verbosity.Diagnostic, LogLevel.Information,
+                    $"{configuredSources.Count} package sources loaded");
+            }
+            catch (Exception ex)
+            {
+                context.Log.Write(Verbosity.Diagnostic, LogLevel.Error,
+                    $"Failed to load package sources: {ex.Message}");
+            }
+
+            return configuredSources != null;
+        }
+
+        private static SourceRepository GetSourceRepository(string nugetSource)
+        {
+            var configuredSource =
+                configuredSources?.FirstOrDefault(s =>
+                    s.Source.Equals(nugetSource, StringComparison.OrdinalIgnoreCase));
+
+            return configuredSource != null
+                ? Repository.Factory.GetCoreV3(configuredSource)
+                : Repository.Factory.GetCoreV3(nugetSource);
         }
     }
 }
